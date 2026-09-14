@@ -1,10 +1,10 @@
 {
-  "name": "plugin-template",
+  "name": "plugin-gcp-lib",
   "build": {
     "context": ".",
     "dockerfile": "Dockerfile"
   },
-  "workspaceFolder": "/workspaces/plugin-template",
+  "workspaceFolder": "/workspaces/plugin-gcp-lib",
   "forwardPorts": [8080],
   "customizations": {
     "vscode": {
