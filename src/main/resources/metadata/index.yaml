@@ -1,7 +1,7 @@
-group: io.kestra.plugin.gcp-lib
+group: io.kestra.plugin.gcp.shared
 name: "gcp-lib"
 title: "GCP Lib"
-description: "GCP Lib plugin for Kestra"
+description: "Shared kernel library for Kestra GCP plugins (OSS and EE)."
 body: ""
 videos: []
 createdBy: "Kestra Core Team"
