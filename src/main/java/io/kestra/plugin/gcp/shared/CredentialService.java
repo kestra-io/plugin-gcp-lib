@@ -26,10 +26,11 @@ public final class CredentialService {
         GoogleCredentials credentials;
 
         if (gcpInterface.getServiceAccount() != null) {
-            String serviceAccount = runContext.render(gcpInterface.getServiceAccount()).as(String.class).orElseThrow();
-            ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(serviceAccount.getBytes());
+            String serviceAccount = runContext.render(gcpInterface.getServiceAccount()).as(String.class)
+                .orElseThrow(() -> new IllegalArgumentException("serviceAccount rendered to an empty value"));
+            var byteArrayInputStream = new ByteArrayInputStream(serviceAccount.getBytes());
             credentials = ServiceAccountCredentials.fromStream(byteArrayInputStream);
-            Logger logger = runContext.logger();
+            var logger = runContext.logger();
 
             if (logger.isTraceEnabled()) {
                 byteArrayInputStream.reset();
@@ -53,7 +54,8 @@ public final class CredentialService {
 
         if (gcpInterface.getImpersonatedServiceAccount() != null) {
             credentials = ImpersonatedCredentials.create(
-                credentials, runContext.render(gcpInterface.getImpersonatedServiceAccount()).as(String.class).orElseThrow(),
+                credentials, runContext.render(gcpInterface.getImpersonatedServiceAccount()).as(String.class)
+                    .orElseThrow(() -> new IllegalArgumentException("impersonatedServiceAccount rendered to an empty value")),
                 null,
                 renderedScopes.isEmpty() ? new ArrayList<>() : renderedScopes,
                 3600

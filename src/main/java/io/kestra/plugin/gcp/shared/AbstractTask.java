@@ -32,7 +32,7 @@ public abstract class AbstractTask extends Task implements GcpInterface {
     protected Property<List<String>> scopes = Property.ofValue(Collections.singletonList("https://www.googleapis.com/auth/cloud-platform"));
 
     public GoogleCredentials credentials(RunContext runContext) throws IllegalVariableEvaluationException, IOException {
-        GoogleCredentials credentials = CredentialService.credentials(runContext, this);
+        var credentials = CredentialService.credentials(runContext, this);
         projectId = CredentialService.resolveProjectId(this, credentials);
         return credentials;
     }
