@@ -79,18 +79,25 @@ class CredentialServiceTest {
 
     @Test
     void shouldFallBackToServiceAccountProjectIdWhenNotSet() throws Exception {
-        GcpInterface gcpInterface = new TestGcpInterface(null, null, null, null);
-        ServiceAccountCredentials credentials = ServiceAccountCredentials.newBuilder()
-            .setClientId("client-id")
-            .setClientEmail("test@my-project.iam.gserviceaccount.com")
-            .setPrivateKey(generateRsaKeyPair().getPrivate())
-            .setPrivateKeyId("private-key-id")
-            .setProjectId("my-project")
-            .build();
+        GcpInterface gcpInterface = new TestGcpInterface(null, Property.ofValue("sa-key"), null, null);
+        ServiceAccountCredentials credentials = serviceAccountCredentials("my-project");
 
         Property<String> resolved = CredentialService.resolveProjectId(gcpInterface, credentials);
 
         assertThat(resolved, is(Property.ofValue("my-project")));
+    }
+
+    @Test
+    void shouldNotInferProjectIdFromAdcWhenServiceAccountUnset() throws Exception {
+        // serviceAccount unset: credentials come from Application Default Credentials. Even when ADC
+        // resolves to a service-account key (GOOGLE_APPLICATION_CREDENTIALS), its project id must not
+        // be adopted silently — the run keeps failing explicitly downstream, as it did before.
+        GcpInterface gcpInterface = new TestGcpInterface(null, null, null, null);
+        ServiceAccountCredentials adcCredentials = serviceAccountCredentials("host-key-project");
+
+        Property<String> resolved = CredentialService.resolveProjectId(gcpInterface, adcCredentials);
+
+        assertThat(resolved, is(nullValue()));
     }
 
     @Test
@@ -177,6 +184,16 @@ class CredentialServiceTest {
         key.put("token_uri", "https://oauth2.googleapis.com/token");
 
         return JacksonMapper.ofJson().writeValueAsString(key);
+    }
+
+    private static ServiceAccountCredentials serviceAccountCredentials(String projectId) throws Exception {
+        return ServiceAccountCredentials.newBuilder()
+            .setClientId("client-id")
+            .setClientEmail("test@" + projectId + ".iam.gserviceaccount.com")
+            .setPrivateKey(generateRsaKeyPair().getPrivate())
+            .setPrivateKeyId("private-key-id")
+            .setProjectId(projectId)
+            .build();
     }
 
     private static KeyPair generateRsaKeyPair() throws NoSuchAlgorithmException {

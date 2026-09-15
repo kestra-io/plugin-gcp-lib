@@ -70,9 +70,9 @@ public final class CredentialService {
      * Wraps already-resolved source credentials with impersonation when configured, without
      * re-deriving them. Used by {@link #credentials(RunContext, GcpInterface)} and by callers
      * (e.g. {@code AbstractTask}) that already hold the source credentials, e.g. to resolve the
-     * project id against them.
+     * project id against them before wrapping.
      */
-    static GoogleCredentials credentials(RunContext runContext, GcpInterface gcpInterface, GoogleCredentials sourceCredentials)
+    public static GoogleCredentials credentials(RunContext runContext, GcpInterface gcpInterface, GoogleCredentials sourceCredentials)
         throws IllegalVariableEvaluationException, IOException {
         if (gcpInterface.getImpersonatedServiceAccount() == null) {
             return sourceCredentials;
@@ -96,12 +96,19 @@ public final class CredentialService {
      * or {@code credentials} — regardless of how those credentials were obtained; callers must pass
      * the pre-impersonation source credentials (see {@link #sourceCredentials}) to get a non-null
      * result when impersonation is configured.
+     * <p>
+     * Inference is gated on an explicitly-provided {@code serviceAccount}: when none is set the
+     * credentials come from Application Default Credentials, and a key file pointed at by
+     * {@code GOOGLE_APPLICATION_CREDENTIALS} must not silently supply the project id. Such a run
+     * keeps failing explicitly when no {@code projectId} is configured, as it did before the kernel
+     * extraction.
      */
     public static Property<String> resolveProjectId(GcpInterface gcpInterface, GoogleCredentials credentials) {
         if (gcpInterface.getProjectId() != null) {
             return gcpInterface.getProjectId();
         }
-        if (credentials instanceof ServiceAccountCredentials serviceAccountCredentials
+        if (gcpInterface.getServiceAccount() != null
+            && credentials instanceof ServiceAccountCredentials serviceAccountCredentials
             && serviceAccountCredentials.getProjectId() != null) {
             return Property.ofValue(serviceAccountCredentials.getProjectId());
         }
