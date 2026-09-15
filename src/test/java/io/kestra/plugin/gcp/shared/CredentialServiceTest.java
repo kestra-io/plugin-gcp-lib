@@ -137,6 +137,27 @@ class CredentialServiceTest {
         assertThat(((ImpersonatedCredentials) credentials).getAccount(), is("target@my-project.iam.gserviceaccount.com"));
     }
 
+    @Test
+    void shouldResolveProjectIdFromSourceCredentialsWhenImpersonated() throws Exception {
+        RunContext runContext = runContextFactory.of();
+        GcpInterface gcpInterface = new TestGcpInterface(
+            null,
+            Property.ofValue(serviceAccountJson()),
+            Property.ofValue("target@my-project.iam.gserviceaccount.com"),
+            Property.ofValue(List.of(CLOUD_PLATFORM_SCOPE))
+        );
+
+        GoogleCredentials sourceCredentials = CredentialService.sourceCredentials(runContext, gcpInterface);
+        GoogleCredentials credentials = CredentialService.credentials(runContext, gcpInterface);
+
+        // the final credentials are impersonated and carry no project id of their own
+        assertThat(credentials, instanceOf(ImpersonatedCredentials.class));
+
+        // project id must be resolved from the pre-impersonation source credentials, not the wrapper
+        Property<String> resolvedProjectId = CredentialService.resolveProjectId(gcpInterface, sourceCredentials);
+        assertThat(resolvedProjectId, is(Property.ofValue("my-project")));
+    }
+
     /**
      * Builds a syntactically valid service-account JSON key with a freshly generated RSA private key.
      * Parsing it never touches the network — the key is only used for signing, not exchanged here.

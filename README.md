@@ -45,8 +45,8 @@
 
 ## What
 
-- Provides plugin components under `io.kestra.plugin.gcp-lib`.
-- Includes classes such as `Example`, `Trigger`.
+- Provides shared GCP auth/connection classes under `io.kestra.plugin.gcp.shared`.
+- Includes `GcpInterface`, `CredentialService`, and `AbstractTask`.
 
 ## Running Kestra locally with this plugin
 

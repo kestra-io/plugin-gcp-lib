@@ -13,11 +13,11 @@ public interface GcpInterface {
     Property<String> getProjectId();
 
     @Schema(title = "The GCP service account")
-    @PluginProperty(secret = true, group = "connection")
+    @PluginProperty(secret = true, group = "execution")
     Property<String> getServiceAccount();
 
     @Schema(title = "The GCP service account to impersonate")
-    @PluginProperty(secret = true, group = "connection")
+    @PluginProperty(secret = true, group = "advanced")
     Property<String> getImpersonatedServiceAccount();
 
     @Schema(title = "The GCP scopes to be used")

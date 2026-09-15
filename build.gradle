@@ -6,7 +6,6 @@ plugins {
     id 'java-library'
     id "idea"
     id 'jacoco'
-    id "com.gradleup.shadow" version "9.6.1"
     id 'signing'
     id 'net.researchgate.release' version '3.1.0'
 }
@@ -150,23 +149,6 @@ mavenPublishing {
 tasks.withType(GenerateModuleMetadata).configureEach {
     // Suppression this validation error as we want to enforce the Kestra platform
     suppressedValidationErrors.add('enforced-platform')
-}
-
-jar {
-    manifest {
-        attributes(
-            "X-Kestra-Name": project.name,
-            "X-Kestra-Title": "GCP Lib",
-            "X-Kestra-Group": project.group + ".gcp.shared",
-            "X-Kestra-Description": project.description,
-            "X-Kestra-Version": project.version
-        )
-    }
-}
-
-shadowJar {
-    archiveClassifier.set(null)
-    mergeServiceFiles()
 }
 
 /**********************************************************************************************************************\
