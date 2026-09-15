@@ -17,7 +17,9 @@ public interface GcpInterface {
     Property<String> getServiceAccount();
 
     @Schema(title = "The GCP service account to impersonate")
-    @PluginProperty(secret = true, group = "advanced")
+    // Not secret: this is a service-account email that users need to read back, not a credential.
+    // Marking it secret renders it as a masked password field.
+    @PluginProperty(group = "advanced")
     Property<String> getImpersonatedServiceAccount();
 
     @Schema(title = "The GCP scopes to be used")
