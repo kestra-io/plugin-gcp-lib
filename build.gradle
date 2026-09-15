@@ -49,7 +49,7 @@ dependencies {
     compileOnly group: "io.kestra", name: "script", version: kestraVersion
 
     // GCP auth, exposed as api so consumers (plugin-gcp, plugin-ee-gcp) inherit it transitively
-    // Version supplied by enforcedPlatform("io.kestra:platform") — mirrors how plugin-gcp declares
+    // Version supplied by enforcedPlatform("io.kestra:platform"), mirroring how plugin-gcp declares
     // bare com.google.cloud:* coordinates; avoids exposing the whole libraries-bom transitively.
     api 'com.google.auth:google-auth-library-oauth2-http'
 }
