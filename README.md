@@ -39,32 +39,25 @@
 
 ## Why
 
-- What user problem does this solve? Teams need a concrete starting point for building and validating new Kestra plugins without recreating the same project scaffolding from scratch.
-- Why would a team adopt this plugin in a workflow? It gives plugin authors a ready-made reference repo they can adapt alongside their own build, test, and publishing workflow.
-- What operational/business outcome does it enable? It shortens plugin delivery time, reduces setup mistakes, and makes internal or partner plugin development more repeatable.
+- What user problem does this solve? `plugin-gcp` (OSS) and `plugin-ee-gcp` (EE) each maintained their own copy of GCP credential resolution (service account, impersonation, scopes, project id inference), which drifted over time and had to be fixed twice for the same bug.
+- Why would a team adopt this? It is not used directly in flows; it is a library dependency that GCP task and trigger authors build on to get consistent, tested authentication behaviour for free.
+- What operational/business outcome does it enable? A single place to fix GCP auth bugs and add auth features (impersonation, scopes) that both the OSS and EE GCP plugins pick up.
 
 ## What
 
-- Provides plugin components under `io.kestra.plugin.gcp-lib`.
-- Includes classes such as `Example`, `Trigger`.
+- Shared kernel of GCP authentication/connection base classes, consumed by both `plugin-gcp` and `plugin-ee-gcp`.
+- Provides classes under `io.kestra.plugin.gcp.shared`: `GcpInterface`, `CredentialService`, `AbstractTask`.
 
-## Running Kestra locally with this plugin
+## Building and consuming
 
-1. Build the shadow JAR: `./gradlew shadowJar`. The output lands in `build/libs/`.
-2. Run `docker compose up`. `docker-compose.yml` builds `kestra/kestra:latest` and mounts `build/libs/` to `/app/plugins/`, so Kestra picks up the jar on startup.
-3. Kestra UI is available at [localhost:8080](http://localhost:8080).
+This is a library, not a runnable plugin, so there is no shadow jar and it is not dropped into a Kestra `plugins/` folder on its own. Build and publish it locally with:
 
-### Plugins folder gotcha
-
-Mounting a host folder onto `/app/plugins/` replaces the container's plugins directory rather than adding to it. Core plugins (the ones logged as `Registered N core plugins`) are compiled into Kestra itself and aren't affected, but any additional plugin normally bundled in the base image under `/app/plugins/` (e.g. the Python script plugin) gets hidden once the mount is in place. If a flow you're testing depends on another plugin, copy its jar into `build/libs/` too before starting the container.
-
-### JFR startup error
-
-On some hosts, `command: server local` fails with:
+```bash
+./gradlew build            # compile + test
+./gradlew publishToMavenLocal   # make it available to plugin-gcp / plugin-ee-gcp
 ```
-Unable to create JFR repository directory using base location (/tmp)
-```
-`docker-compose.yml` works around this by mounting `/tmp` as `tmpfs`. If you build your own compose file or run Kestra via `docker run`, add the same workaround, e.g. `-v /tmp:/tmp` or `--tmpfs /tmp`. Tracked upstream in [kestra-io/kestra#17405](https://github.com/kestra-io/kestra/issues/17405).
+
+Consumers depend on it through their own build and inherit the shared auth classes transitively.
 
 ## Documentation
 * Full documentation can be found under: [kestra.io/docs](https://kestra.io/docs)

@@ -2,11 +2,9 @@ plugins {
     id 'io.kestra.gradle.repository-conventions' version '1.2.10'
     id "com.vanniktech.maven.publish" version "0.37.0"
     id "io.kestra.gradle.inject-bom-versions" version "1.2.10"
-    id "io.kestra.gradle.plugin-doc-lint" version "1.2.10"
     id 'java-library'
     id "idea"
     id 'jacoco'
-    id "com.gradleup.shadow" version "9.6.1"
     id 'signing'
     id 'net.researchgate.release' version '3.1.0'
 }
@@ -29,7 +27,7 @@ java {
 }
 
 group = "io.kestra.plugin"
-description = 'GCP Lib plugin for Kestra'
+description = 'Shared kernel library for Kestra GCP plugins (OSS and EE).'
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = "UTF-8"
@@ -49,6 +47,11 @@ dependencies {
     annotationProcessor group: "io.kestra", name: "processor", version: kestraVersion
     compileOnly group: "io.kestra", name: "core", version: kestraVersion
     compileOnly group: "io.kestra", name: "script", version: kestraVersion
+
+    // GCP auth, exposed as api so consumers (plugin-gcp, plugin-ee-gcp) inherit it transitively
+    // Version supplied by enforcedPlatform("io.kestra:platform"), mirroring how plugin-gcp declares
+    // bare com.google.cloud:* coordinates; avoids exposing the whole libraries-bom transitively.
+    api 'com.google.auth:google-auth-library-oauth2-http'
 }
 
 
@@ -145,23 +148,6 @@ mavenPublishing {
 tasks.withType(GenerateModuleMetadata).configureEach {
     // Suppression this validation error as we want to enforce the Kestra platform
     suppressedValidationErrors.add('enforced-platform')
-}
-
-jar {
-    manifest {
-        attributes(
-            "X-Kestra-Name": project.name,
-            "X-Kestra-Title": "GCP Lib",
-            "X-Kestra-Group": project.group + ".gcp-lib",
-            "X-Kestra-Description": project.description,
-            "X-Kestra-Version": project.version
-        )
-    }
-}
-
-shadowJar {
-    archiveClassifier.set(null)
-    mergeServiceFiles()
 }
 
 /**********************************************************************************************************************\

@@ -31,11 +31,9 @@ Make sure to run the following command from your host system to start the docker
 $ docker compose down -v && docker compose up -d
 ```
 
-From this point, you can start developing your plugin and every time you want it updated within Kestra, run the following command to build the plugin: `./gradlew shadowJar`.
+From this point, you can start developing. This is a shared library rather than a runnable plugin, so build and publish it locally for the consuming GCP plugins to pick up: `./gradlew build` to compile and test, then `./gradlew publishToMavenLocal`.
 
-The resulting JAR file will be generated in the `build/libs` directory and should automatically get reflected inside the local Kestra instance. However, you will need to manually restart the Kestra container for the plugin to take effect after making changes so Kestra can reload the plugins. But this is still a much better and faster developer experience as you won't need to rebuild the image and create a new container each time you make any source code changes.
-
-You can now navigate to http://localhost:8080 and start using your custom plugin.
+The resulting artifact is published to your local Maven repository. `plugin-gcp` and `plugin-ee-gcp` then consume it through their own build.
 
 `Tests`:
 

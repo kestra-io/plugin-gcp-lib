@@ -44,4 +44,8 @@ jobs:
     with:
       skip-test: ${{ github.event.inputs.skip-test == 'true' }}
       kestra-version: ${{ github.event.inputs.kestra-version }}
+      # This is a shared library, not a runnable plugin: there is no shadow jar to build and it must
+      # not be doc-indexed as a plugin. Mirrors plugin-azure-lib / plugin-kubernetes-lib.
+      generate-shadowjar: false
+      skip-indexing: true
     secrets: inherit
