@@ -32,9 +32,10 @@ public abstract class AbstractTask extends Task implements GcpInterface {
     protected Property<List<String>> scopes = Property.ofValue(Collections.singletonList("https://www.googleapis.com/auth/cloud-platform"));
 
     public GoogleCredentials credentials(RunContext runContext) throws IllegalVariableEvaluationException, IOException {
-        var sourceCredentials = CredentialService.sourceCredentials(runContext, this);
-        var credentials = CredentialService.credentials(runContext, this, sourceCredentials);
-        projectId = CredentialService.resolveProjectId(this, sourceCredentials);
-        return credentials;
+        CredentialService.GcpConnection connection = CredentialService.connection(runContext, this);
+        // Preserved from plugin-gcp: concrete tasks (and gcs.Trigger) read getProjectId() after this
+        // call, so the resolved project id is written back onto the configured property.
+        this.projectId = connection.projectId();
+        return connection.credentials();
     }
 }

@@ -39,14 +39,26 @@ class CredentialServiceTest {
 
     /**
      * Minimal, hermetic {@link GcpInterface} implementation used to drive the service under test.
-     * Any accessor a given test does not exercise is simply passed {@code null}.
+     * Any accessor a given test does not exercise is simply passed {@code null}. {@code inferFromAdc}
+     * models the plugin-gcp (true) vs plugin-ee-gcp (false) override of
+     * {@link GcpInterface#inferProjectIdFromApplicationDefault()}.
      */
     private record TestGcpInterface(
         Property<String> projectId,
         Property<String> serviceAccount,
         Property<String> impersonatedServiceAccount,
-        Property<List<String>> scopes
+        Property<List<String>> scopes,
+        boolean inferFromAdc
     ) implements GcpInterface {
+        private TestGcpInterface(
+            Property<String> projectId,
+            Property<String> serviceAccount,
+            Property<String> impersonatedServiceAccount,
+            Property<List<String>> scopes
+        ) {
+            this(projectId, serviceAccount, impersonatedServiceAccount, scopes, true);
+        }
+
         @Override
         public Property<String> getProjectId() {
             return projectId;
@@ -65,6 +77,11 @@ class CredentialServiceTest {
         @Override
         public Property<List<String>> getScopes() {
             return scopes;
+        }
+
+        @Override
+        public boolean inferProjectIdFromApplicationDefault() {
+            return inferFromAdc;
         }
     }
 
@@ -88,11 +105,22 @@ class CredentialServiceTest {
     }
 
     @Test
-    void shouldNotInferProjectIdFromAdcWhenServiceAccountUnset() throws Exception {
-        // serviceAccount unset: credentials come from Application Default Credentials. Even when ADC
-        // resolves to a service-account key (GOOGLE_APPLICATION_CREDENTIALS), its project id must not
-        // be adopted silently — the run keeps failing explicitly downstream, as it did before.
-        GcpInterface gcpInterface = new TestGcpInterface(null, null, null, null);
+    void shouldInferProjectIdFromAdcWhenAllowed() throws Exception {
+        // serviceAccount unset, so credentials come from Application Default Credentials. plugin-gcp
+        // (inferFromAdc = true) keeps its historical behaviour of adopting the key file's project id.
+        GcpInterface gcpInterface = new TestGcpInterface(null, null, null, null, true);
+        ServiceAccountCredentials adcCredentials = serviceAccountCredentials("host-key-project");
+
+        Property<String> resolved = CredentialService.resolveProjectId(gcpInterface, adcCredentials);
+
+        assertThat(resolved, is(Property.ofValue("host-key-project")));
+    }
+
+    @Test
+    void shouldNotInferProjectIdFromAdcWhenGated() throws Exception {
+        // plugin-ee-gcp (inferFromAdc = false) requires an explicit projectId in this case: the ADC
+        // key file's project id must not be adopted silently.
+        GcpInterface gcpInterface = new TestGcpInterface(null, null, null, null, false);
         ServiceAccountCredentials adcCredentials = serviceAccountCredentials("host-key-project");
 
         Property<String> resolved = CredentialService.resolveProjectId(gcpInterface, adcCredentials);
@@ -111,7 +139,7 @@ class CredentialServiceTest {
     }
 
     @Test
-    void shouldBuildScopedServiceAccountCredentialsFromJsonKey() throws Exception {
+    void shouldBuildScopedServiceAccountCredentials() throws Exception {
         RunContext runContext = runContextFactory.of();
         GcpInterface gcpInterface = new TestGcpInterface(
             null,
@@ -120,12 +148,13 @@ class CredentialServiceTest {
             Property.ofValue(List.of(CLOUD_PLATFORM_SCOPE))
         );
 
-        GoogleCredentials credentials = CredentialService.credentials(runContext, gcpInterface);
+        CredentialService.GcpConnection connection = CredentialService.connection(runContext, gcpInterface);
 
-        assertThat(credentials, instanceOf(ServiceAccountCredentials.class));
-        ServiceAccountCredentials serviceAccountCredentials = (ServiceAccountCredentials) credentials;
+        assertThat(connection.credentials(), instanceOf(ServiceAccountCredentials.class));
+        ServiceAccountCredentials serviceAccountCredentials = (ServiceAccountCredentials) connection.credentials();
         assertThat(serviceAccountCredentials.getClientEmail(), is("test@my-project.iam.gserviceaccount.com"));
         assertThat(serviceAccountCredentials.getScopes(), hasItem(CLOUD_PLATFORM_SCOPE));
+        assertThat(connection.projectId(), is(Property.ofValue("my-project")));
     }
 
     @Test
@@ -138,10 +167,10 @@ class CredentialServiceTest {
             Property.ofValue(List.of(CLOUD_PLATFORM_SCOPE))
         );
 
-        GoogleCredentials credentials = CredentialService.credentials(runContext, gcpInterface);
+        CredentialService.GcpConnection connection = CredentialService.connection(runContext, gcpInterface);
 
-        assertThat(credentials, instanceOf(ImpersonatedCredentials.class));
-        assertThat(((ImpersonatedCredentials) credentials).getAccount(), is("target@my-project.iam.gserviceaccount.com"));
+        assertThat(connection.credentials(), instanceOf(ImpersonatedCredentials.class));
+        assertThat(((ImpersonatedCredentials) connection.credentials()).getAccount(), is("target@my-project.iam.gserviceaccount.com"));
     }
 
     @Test
@@ -154,20 +183,43 @@ class CredentialServiceTest {
             Property.ofValue(List.of(CLOUD_PLATFORM_SCOPE))
         );
 
-        GoogleCredentials sourceCredentials = CredentialService.sourceCredentials(runContext, gcpInterface);
-        GoogleCredentials credentials = CredentialService.credentials(runContext, gcpInterface);
+        CredentialService.GcpConnection connection = CredentialService.connection(runContext, gcpInterface);
 
-        // the final credentials are impersonated and carry no project id of their own
+        // the final credentials are impersonated and carry no project id of their own, yet the
+        // connection still exposes the project id read from the pre-impersonation source credentials.
+        assertThat(connection.credentials(), instanceOf(ImpersonatedCredentials.class));
+        assertThat(connection.projectId(), is(Property.ofValue("my-project")));
+    }
+
+    @Test
+    void abstractTaskShouldExposeProjectIdUnderImpersonation() throws Exception {
+        RunContext runContext = runContextFactory.of();
+        // Locals are named to avoid clashing with the inherited protected fields: inside the
+        // anonymous class an unqualified name resolves to the (still null) field, not the local.
+        Property<String> serviceAccountKey = Property.ofValue(serviceAccountJson());
+        Property<String> impersonated = Property.ofValue("target@my-project.iam.gserviceaccount.com");
+        Property<List<String>> configuredScopes = Property.ofValue(List.of(CLOUD_PLATFORM_SCOPE));
+        // Anonymous subclass on purpose: a named concrete AbstractTask would be picked up by the
+        // Kestra plugin processor and registered as a plugin, which flips the test context into
+        // plugin-registry mode and breaks storage discovery. Fields are protected, so we set them
+        // directly rather than via the SuperBuilder.
+        AbstractTask task = new AbstractTask() {
+            {
+                this.serviceAccount = serviceAccountKey;
+                this.impersonatedServiceAccount = impersonated;
+                this.scopes = configuredScopes;
+            }
+        };
+
+        GoogleCredentials credentials = task.credentials(runContext);
+
         assertThat(credentials, instanceOf(ImpersonatedCredentials.class));
-
-        // project id must be resolved from the pre-impersonation source credentials, not the wrapper
-        Property<String> resolvedProjectId = CredentialService.resolveProjectId(gcpInterface, sourceCredentials);
-        assertThat(resolvedProjectId, is(Property.ofValue("my-project")));
+        assertThat(task.getProjectId(), is(Property.ofValue("my-project")));
     }
 
     /**
      * Builds a syntactically valid service-account JSON key with a freshly generated RSA private key.
-     * Parsing it never touches the network — the key is only used for signing, not exchanged here.
+     * Parsing it never touches the network: the key is only used for signing, not exchanged here.
      */
     private static String serviceAccountJson() throws Exception {
         String encodedKey = Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.US_ASCII))

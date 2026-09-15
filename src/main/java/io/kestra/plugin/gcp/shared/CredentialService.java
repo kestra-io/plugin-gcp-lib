@@ -4,6 +4,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -21,13 +22,38 @@ public final class CredentialService {
     }
 
     /**
-     * Resolves the credentials authenticating as the configured service account (or application
-     * default credentials), with scopes applied, before any impersonation is layered on top.
-     * {@link #resolveProjectId} must be called against these source credentials rather than the
-     * result of {@link #credentials}, since {@link ImpersonatedCredentials} does not carry a
-     * project id of its own.
+     * The resolved GCP connection for a {@link GcpInterface}: the credentials to authenticate with
+     * (already impersonated when configured) together with the effective project id.
+     * <p>
+     * These two are resolved together on purpose. The project id must be read from the
+     * pre-impersonation source credentials, since {@link ImpersonatedCredentials} carries none of its
+     * own, so exposing a single call that returns both removes the recurring footgun of resolving the
+     * project id against the already-impersonated result and silently getting {@code null}.
      */
-    public static GoogleCredentials sourceCredentials(RunContext runContext, GcpInterface gcpInterface)
+    public record GcpConnection(GoogleCredentials credentials, Property<String> projectId) {
+    }
+
+    /**
+     * Resolves the GCP connection for the given interface: builds the source credentials (service
+     * account key or Application Default Credentials, with scopes applied), reads the effective
+     * project id from them, then layers impersonation on top when configured. This is the only entry
+     * point; the intermediate steps are intentionally not exposed so callers cannot recombine them
+     * incorrectly.
+     */
+    public static GcpConnection connection(RunContext runContext, GcpInterface gcpInterface)
+        throws IllegalVariableEvaluationException, IOException {
+        List<String> scopes = runContext.render(gcpInterface.getScopes()).asList(String.class);
+        GoogleCredentials sourceCredentials = sourceCredentials(runContext, gcpInterface, scopes);
+        Property<String> projectId = resolveProjectId(gcpInterface, sourceCredentials);
+        GoogleCredentials credentials = impersonate(runContext, gcpInterface, sourceCredentials, scopes);
+        return new GcpConnection(credentials, projectId);
+    }
+
+    /**
+     * Builds the credentials authenticating as the configured service account (or application default
+     * credentials), with {@code scopes} applied, before any impersonation is layered on top.
+     */
+    static GoogleCredentials sourceCredentials(RunContext runContext, GcpInterface gcpInterface, List<String> scopes)
         throws IllegalVariableEvaluationException, IOException {
         GoogleCredentials credentials;
 
@@ -53,65 +79,54 @@ public final class CredentialService {
             credentials = GoogleCredentials.getApplicationDefault();
         }
 
-        var renderedScopes = runContext.render(gcpInterface.getScopes()).asList(String.class);
-        if (!renderedScopes.isEmpty()) {
-            credentials = credentials.createScoped(renderedScopes);
+        if (!scopes.isEmpty()) {
+            credentials = credentials.createScoped(scopes);
         }
 
         return credentials;
     }
 
-    public static GoogleCredentials credentials(RunContext runContext, GcpInterface gcpInterface)
-        throws IllegalVariableEvaluationException, IOException {
-        return credentials(runContext, gcpInterface, sourceCredentials(runContext, gcpInterface));
-    }
-
     /**
-     * Wraps already-resolved source credentials with impersonation when configured, without
-     * re-deriving them. Used by {@link #credentials(RunContext, GcpInterface)} and by callers
-     * (e.g. {@code AbstractTask}) that already hold the source credentials, e.g. to resolve the
-     * project id against them before wrapping.
+     * Wraps the source credentials with impersonation when {@code impersonatedServiceAccount} is set,
+     * reusing the already-rendered {@code scopes}; returns them unchanged otherwise.
      */
-    public static GoogleCredentials credentials(RunContext runContext, GcpInterface gcpInterface, GoogleCredentials sourceCredentials)
-        throws IllegalVariableEvaluationException, IOException {
+    static GoogleCredentials impersonate(RunContext runContext, GcpInterface gcpInterface, GoogleCredentials sourceCredentials, List<String> scopes)
+        throws IllegalVariableEvaluationException {
         if (gcpInterface.getImpersonatedServiceAccount() == null) {
             return sourceCredentials;
         }
 
-        var renderedScopes = runContext.render(gcpInterface.getScopes()).asList(String.class);
         return ImpersonatedCredentials.create(
             sourceCredentials,
             runContext.render(gcpInterface.getImpersonatedServiceAccount()).as(String.class)
                 .orElseThrow(() -> new IllegalArgumentException("impersonatedServiceAccount rendered to an empty value")),
             null,
-            renderedScopes.isEmpty() ? new ArrayList<>() : renderedScopes,
+            scopes.isEmpty() ? new ArrayList<>() : scopes,
             3600
         );
     }
 
     /**
-     * Resolves the effective GCP project id for the given credentials: the explicitly configured
-     * one if present, otherwise the project id inferred from {@code credentials} when they are
-     * {@link ServiceAccountCredentials}. This helper is pure — it never mutates {@code gcpInterface}
-     * or {@code credentials} — regardless of how those credentials were obtained; callers must pass
-     * the pre-impersonation source credentials (see {@link #sourceCredentials}) to get a non-null
-     * result when impersonation is configured.
+     * Resolves the effective GCP project id: the explicitly configured one if present, otherwise the
+     * project id carried by {@code credentials} when they are {@link ServiceAccountCredentials}. Pure:
+     * never mutates {@code gcpInterface} or {@code credentials}. Callers must pass the
+     * pre-impersonation source credentials to get a non-null result when impersonation is configured.
      * <p>
-     * Inference is gated on an explicitly-provided {@code serviceAccount}: when none is set the
-     * credentials come from Application Default Credentials, and a key file pointed at by
-     * {@code GOOGLE_APPLICATION_CREDENTIALS} must not silently supply the project id. Such a run
-     * keeps failing explicitly when no {@code projectId} is configured, as it did before the kernel
-     * extraction.
+     * Inference from credentials that come from Application Default Credentials (no explicit
+     * {@code serviceAccount}) is gated on {@link GcpInterface#inferProjectIdFromApplicationDefault()}:
+     * plugin-gcp allows it (its historical behaviour), plugin-ee-gcp does not. An explicit
+     * {@code serviceAccount} always allows it.
      */
-    public static Property<String> resolveProjectId(GcpInterface gcpInterface, GoogleCredentials credentials) {
+    static Property<String> resolveProjectId(GcpInterface gcpInterface, GoogleCredentials credentials) {
         if (gcpInterface.getProjectId() != null) {
             return gcpInterface.getProjectId();
         }
-        if (gcpInterface.getServiceAccount() != null
+        boolean fromExplicitServiceAccount = gcpInterface.getServiceAccount() != null;
+        if ((fromExplicitServiceAccount || gcpInterface.inferProjectIdFromApplicationDefault())
             && credentials instanceof ServiceAccountCredentials serviceAccountCredentials
             && serviceAccountCredentials.getProjectId() != null) {
             return Property.ofValue(serviceAccountCredentials.getProjectId());
         }
-        return gcpInterface.getProjectId();
+        return null;
     }
 }

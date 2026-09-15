@@ -17,12 +17,27 @@ public interface GcpInterface {
     Property<String> getServiceAccount();
 
     @Schema(title = "The GCP service account to impersonate")
-    // Not secret: this is a service-account email that users need to read back, not a credential.
-    // Marking it secret renders it as a masked password field.
-    @PluginProperty(group = "advanced")
+    @PluginProperty(secret = true, group = "advanced")
     Property<String> getImpersonatedServiceAccount();
 
     @Schema(title = "The GCP scopes to be used")
     @PluginProperty(group = "advanced")
     Property<List<String>> getScopes();
+
+    /**
+     * Whether the project id may be inferred from Application Default Credentials that happen to
+     * resolve to a service-account key (e.g. {@code GOOGLE_APPLICATION_CREDENTIALS}) when neither an
+     * explicit {@code projectId} nor an explicit {@code serviceAccount} is configured.
+     * <p>
+     * plugin-gcp (OSS) infers it, its historical behaviour, kept here so the extraction is a no-op
+     * for OSS. plugin-ee-gcp overrides this to {@code false} so that such a run keeps failing
+     * explicitly rather than silently adopting the host key file's project. An explicitly-configured
+     * {@code serviceAccount} always allows inference regardless of this flag.
+     * <p>
+     * Not a configurable plugin property: it does not follow getter naming, so it is never
+     * serialized or documented in the schema.
+     */
+    default boolean inferProjectIdFromApplicationDefault() {
+        return true;
+    }
 }
