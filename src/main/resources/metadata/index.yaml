@@ -1,8 +1,0 @@
-group: io.kestra.plugin.gcp-lib
-name: "gcp-lib"
-title: "GCP Lib"
-description: "GCP Lib plugin for Kestra"
-body: ""
-videos: []
-createdBy: "Kestra Core Team"
-managedBy: "Kestra Core Team"
