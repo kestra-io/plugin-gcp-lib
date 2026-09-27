@@ -8,24 +8,20 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import io.kestra.core.models.annotations.PluginProperty;
 
 public interface GcpInterface {
-    // TODO(#2): these connection properties are spread across three groups (connection / execution /
-    // advanced) inherited from the pre-extraction plugins. Regroup them consistently under
-    // "connection" in a change coordinated across the kernel, plugin-gcp and plugin-ee-gcp.
-    // https://github.com/kestra-io/plugin-gcp-lib/issues/2
     @Schema(title = "The GCP project ID")
     @PluginProperty(group = "connection")
     Property<String> getProjectId();
 
     @Schema(title = "The GCP service account")
-    @PluginProperty(secret = true, group = "execution")
+    @PluginProperty(secret = true, group = "connection")
     Property<String> getServiceAccount();
 
     @Schema(title = "The GCP service account to impersonate")
-    @PluginProperty(secret = true, group = "advanced")
+    @PluginProperty(secret = true, group = "connection")
     Property<String> getImpersonatedServiceAccount();
 
     @Schema(title = "The GCP scopes to be used")
-    @PluginProperty(group = "advanced")
+    @PluginProperty(group = "connection")
     Property<List<String>> getScopes();
 
     /**
