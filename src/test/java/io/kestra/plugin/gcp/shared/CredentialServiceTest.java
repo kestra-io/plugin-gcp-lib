@@ -8,6 +8,7 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.auth.oauth2.ImpersonatedCredentials;
@@ -89,7 +90,7 @@ class CredentialServiceTest {
     void shouldReturnExplicitProjectIdWhenSet() {
         GcpInterface gcpInterface = new TestGcpInterface(Property.ofValue("explicit-project"), null, null, null);
 
-        Property<String> resolved = CredentialService.resolveProjectId(gcpInterface, null);
+        Property<String> resolved = CredentialService.resolveProjectId(gcpInterface, false, null);
 
         assertThat(resolved, is(gcpInterface.getProjectId()));
     }
@@ -99,7 +100,7 @@ class CredentialServiceTest {
         GcpInterface gcpInterface = new TestGcpInterface(null, Property.ofValue("sa-key"), null, null);
         ServiceAccountCredentials credentials = serviceAccountCredentials("my-project");
 
-        Property<String> resolved = CredentialService.resolveProjectId(gcpInterface, credentials);
+        Property<String> resolved = CredentialService.resolveProjectId(gcpInterface, true, credentials);
 
         assertThat(resolved, is(Property.ofValue("my-project")));
     }
@@ -111,7 +112,7 @@ class CredentialServiceTest {
         GcpInterface gcpInterface = new TestGcpInterface(null, null, null, null, true);
         ServiceAccountCredentials adcCredentials = serviceAccountCredentials("host-key-project");
 
-        Property<String> resolved = CredentialService.resolveProjectId(gcpInterface, adcCredentials);
+        Property<String> resolved = CredentialService.resolveProjectId(gcpInterface, false, adcCredentials);
 
         assertThat(resolved, is(Property.ofValue("host-key-project")));
     }
@@ -123,7 +124,7 @@ class CredentialServiceTest {
         GcpInterface gcpInterface = new TestGcpInterface(null, null, null, null, false);
         ServiceAccountCredentials adcCredentials = serviceAccountCredentials("host-key-project");
 
-        Property<String> resolved = CredentialService.resolveProjectId(gcpInterface, adcCredentials);
+        Property<String> resolved = CredentialService.resolveProjectId(gcpInterface, false, adcCredentials);
 
         assertThat(resolved, is(nullValue()));
     }
@@ -133,7 +134,7 @@ class CredentialServiceTest {
         GcpInterface gcpInterface = new TestGcpInterface(null, null, null, null);
         GoogleCredentials credentials = GoogleCredentials.newBuilder().build();
 
-        Property<String> resolved = CredentialService.resolveProjectId(gcpInterface, credentials);
+        Property<String> resolved = CredentialService.resolveProjectId(gcpInterface, false, credentials);
 
         assertThat(resolved, is(nullValue()));
     }
@@ -171,6 +172,18 @@ class CredentialServiceTest {
 
         assertThat(connection.credentials(), instanceOf(ImpersonatedCredentials.class));
         assertThat(((ImpersonatedCredentials) connection.credentials()).getAccount(), is("target@my-project.iam.gserviceaccount.com"));
+    }
+
+    @Test
+    void shouldTreatBlankRenderedValueAsUnset() throws Exception {
+        // `{{ ... | default(null) }}` renders to "" rather than null (kestra-io/plugin-gcp#494).
+        RunContext runContext = runContextFactory.of(Map.of("inputs", Map.of("blank", "  ")));
+
+        assertThat(CredentialService.renderNonBlank(runContext, null), is(Optional.empty()));
+        assertThat(CredentialService.renderNonBlank(runContext, Property.ofExpression("{{ null }}")), is(Optional.empty()));
+        assertThat(CredentialService.renderNonBlank(runContext, Property.ofExpression("{{ inputs.missing | default(null) }}")), is(Optional.empty()));
+        assertThat(CredentialService.renderNonBlank(runContext, Property.ofExpression("{{ inputs.blank }}")), is(Optional.empty()));
+        assertThat(CredentialService.renderNonBlank(runContext, Property.ofValue("key")), is(Optional.of("key")));
     }
 
     @Test
