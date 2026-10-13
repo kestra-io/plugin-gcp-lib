@@ -60,6 +60,10 @@ dependencies {
  **********************************************************************************************************************/
 test {
     useJUnitPlatform()
+
+    // Hermetic Application Default Credentials: CredentialServiceTest writes a fake key to this path,
+    // which also keeps the developer's own ADC out of the tests.
+    environment "GOOGLE_APPLICATION_CREDENTIALS", layout.buildDirectory.file("test-adc/key.json").get().asFile.absolutePath
 }
 
 dependencies {

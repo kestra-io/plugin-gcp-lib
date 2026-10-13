@@ -1,6 +1,9 @@
 package io.kestra.plugin.gcp.shared;
 
+import java.io.File;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
@@ -30,11 +33,15 @@ import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 @KestraTest
 class CredentialServiceTest {
 
     private static final String CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
+    private static final String BLANK_EXPRESSION = "{{ inputs.x | default(null) }}";
+    private static final String ADC_PROJECT_ID = "adc-project";
+    private static final String ADC_CLIENT_EMAIL = "adc@adc-project.iam.gserviceaccount.com";
 
     @Inject
     private RunContextFactory runContextFactory;
@@ -206,6 +213,61 @@ class CredentialServiceTest {
     }
 
     @Test
+    void shouldImpersonateOnTopOfAdcWhenServiceAccountRendersBlank() throws Exception {
+        writeAdcKey();
+        RunContext runContext = runContextFactory.of(Map.of("inputs", Map.of()));
+        GcpInterface gcpInterface = new TestGcpInterface(
+            null,
+            Property.ofExpression(BLANK_EXPRESSION),
+            Property.ofValue("target@my-project.iam.gserviceaccount.com"),
+            Property.ofValue(List.of(CLOUD_PLATFORM_SCOPE))
+        );
+
+        CredentialService.GcpConnection connection = CredentialService.connection(runContext, gcpInterface);
+
+        // the source must be the ADC key, not a fromStream parse of the blank serviceAccount
+        assertThat(connection.credentials(), instanceOf(ImpersonatedCredentials.class));
+        GoogleCredentials source = ((ImpersonatedCredentials) connection.credentials()).getSourceCredentials();
+        assertThat(source, instanceOf(ServiceAccountCredentials.class));
+        assertThat(((ServiceAccountCredentials) source).getClientEmail(), is(ADC_CLIENT_EMAIL));
+    }
+
+    @Test
+    void shouldNotInferProjectIdFromAdcWhenServiceAccountRendersBlankAndGated() throws Exception {
+        writeAdcKey();
+        RunContext runContext = runContextFactory.of(Map.of("inputs", Map.of()));
+        GcpInterface gcpInterface = new TestGcpInterface(
+            null,
+            Property.ofExpression(BLANK_EXPRESSION),
+            null,
+            Property.ofValue(List.of(CLOUD_PLATFORM_SCOPE)),
+            false
+        );
+
+        CredentialService.GcpConnection connection = CredentialService.connection(runContext, gcpInterface);
+
+        // a configured-but-blank serviceAccount counts as ADC, so the gate applies
+        assertThat(connection.projectId(), is(nullValue()));
+    }
+
+    @Test
+    void shouldInferProjectIdFromAdcWhenServiceAccountRendersBlankAndAllowed() throws Exception {
+        writeAdcKey();
+        RunContext runContext = runContextFactory.of(Map.of("inputs", Map.of()));
+        GcpInterface gcpInterface = new TestGcpInterface(
+            null,
+            Property.ofExpression(BLANK_EXPRESSION),
+            null,
+            Property.ofValue(List.of(CLOUD_PLATFORM_SCOPE)),
+            true
+        );
+
+        CredentialService.GcpConnection connection = CredentialService.connection(runContext, gcpInterface);
+
+        assertThat(connection.projectId(), is(Property.ofValue(ADC_PROJECT_ID)));
+    }
+
+    @Test
     void shouldResolveProjectIdFromSourceCredentialsWhenImpersonated() throws Exception {
         RunContext runContext = runContextFactory.of();
         GcpInterface gcpInterface = new TestGcpInterface(
@@ -253,17 +315,33 @@ class CredentialServiceTest {
      * Builds a syntactically valid service-account JSON key with a freshly generated RSA private key.
      * Parsing it never touches the network: the key is only used for signing, not exchanged here.
      */
+    /**
+     * Writes a fake key where the Gradle test task points {@code GOOGLE_APPLICATION_CREDENTIALS}; skips
+     * the test when run outside Gradle, since a JVM cannot set its own environment.
+     */
+    private static void writeAdcKey() throws Exception {
+        String adcPath = System.getenv("GOOGLE_APPLICATION_CREDENTIALS");
+        assumeTrue(adcPath != null && adcPath.endsWith("test-adc" + File.separator + "key.json"), "requires the Gradle test task's fake ADC");
+        Path keyFile = Path.of(adcPath);
+        Files.createDirectories(keyFile.getParent());
+        Files.writeString(keyFile, serviceAccountJson(ADC_PROJECT_ID, ADC_CLIENT_EMAIL));
+    }
+
     private static String serviceAccountJson() throws Exception {
+        return serviceAccountJson("my-project", "test@my-project.iam.gserviceaccount.com");
+    }
+
+    private static String serviceAccountJson(String projectId, String clientEmail) throws Exception {
         String encodedKey = Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.US_ASCII))
             .encodeToString(generateRsaKeyPair().getPrivate().getEncoded());
         String pem = "-----BEGIN PRIVATE KEY-----\n" + encodedKey + "\n-----END PRIVATE KEY-----\n";
 
         Map<String, Object> key = new LinkedHashMap<>();
         key.put("type", "service_account");
-        key.put("project_id", "my-project");
+        key.put("project_id", projectId);
         key.put("private_key_id", "private-key-id");
         key.put("private_key", pem);
-        key.put("client_email", "test@my-project.iam.gserviceaccount.com");
+        key.put("client_email", clientEmail);
         key.put("client_id", "client-id");
         key.put("token_uri", "https://oauth2.googleapis.com/token");
 
