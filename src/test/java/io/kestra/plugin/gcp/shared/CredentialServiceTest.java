@@ -29,6 +29,7 @@ import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.nullValue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 @KestraTest
 class CredentialServiceTest {
@@ -184,6 +185,24 @@ class CredentialServiceTest {
         assertThat(CredentialService.renderNonBlank(runContext, Property.ofExpression("{{ inputs.missing | default(null) }}")), is(Optional.empty()));
         assertThat(CredentialService.renderNonBlank(runContext, Property.ofExpression("{{ inputs.blank }}")), is(Optional.empty()));
         assertThat(CredentialService.renderNonBlank(runContext, Property.ofValue("key")), is(Optional.of("key")));
+    }
+
+    @Test
+    void shouldRejectBlankImpersonatedServiceAccount() throws Exception {
+        // Unlike serviceAccount, a blank impersonation target must fail: dropping it would silently run
+        // as the (usually broader) source identity.
+        RunContext runContext = runContextFactory.of(Map.of("inputs", Map.of("blank", "  ")));
+        GoogleCredentials sourceCredentials = serviceAccountCredentials("my-project");
+
+        for (String expression : List.of("{{ inputs.missing | default(null) }}", "{{ inputs.blank }}")) {
+            GcpInterface gcpInterface = new TestGcpInterface(null, null, Property.ofExpression(expression), null);
+
+            IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> CredentialService.impersonate(runContext, gcpInterface, sourceCredentials, List.of())
+            );
+            assertThat(exception.getMessage(), is("impersonatedServiceAccount rendered to an empty value"));
+        }
     }
 
     @Test

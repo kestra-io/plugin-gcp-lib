@@ -114,7 +114,7 @@ public final class CredentialService {
 
         return ImpersonatedCredentials.create(
             sourceCredentials,
-            runContext.render(gcpInterface.getImpersonatedServiceAccount()).as(String.class)
+            renderNonBlank(runContext, gcpInterface.getImpersonatedServiceAccount())
                 .orElseThrow(() -> new IllegalArgumentException("impersonatedServiceAccount rendered to an empty value")),
             null,
             scopes.isEmpty() ? new ArrayList<>() : scopes,
