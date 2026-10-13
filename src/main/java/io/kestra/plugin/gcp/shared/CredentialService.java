@@ -45,6 +45,9 @@ public final class CredentialService {
         throws IllegalVariableEvaluationException, IOException {
         List<String> scopes = runContext.render(gcpInterface.getScopes()).asList(String.class);
         Optional<String> serviceAccount = renderNonBlank(runContext, gcpInterface.getServiceAccount());
+        if (gcpInterface.getServiceAccount() != null && serviceAccount.isEmpty()) {
+            runContext.logger().warn("serviceAccount rendered to an empty value, using Application Default Credentials");
+        }
         GoogleCredentials sourceCredentials = sourceCredentials(runContext, serviceAccount, scopes);
         Property<String> projectId = resolveProjectId(gcpInterface, serviceAccount.isPresent(), sourceCredentials);
         GoogleCredentials credentials = impersonate(runContext, gcpInterface, sourceCredentials, scopes);
