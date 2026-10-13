@@ -55,9 +55,8 @@ public final class CredentialService {
     }
 
     /**
-     * Renders {@code property} and returns its value, or empty when the property is unset or renders
-     * to a blank string. An expression such as {@code "{{ outputs.x.key | default(null) }}"} renders
-     * to {@code ""} rather than {@code null}, so it must be treated the same as an unset property.
+     * Treats a blank render as unset, since expressions like {@code "{{ outputs.x.key | default(null) }}"} renders
+     * to {@code ""} rather than {@code null} when {@code key} is missing.
      */
     static Optional<String> renderNonBlank(RunContext runContext, Property<String> property)
         throws IllegalVariableEvaluationException {

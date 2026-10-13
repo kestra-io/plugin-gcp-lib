@@ -12,7 +12,10 @@ public interface GcpInterface {
     @PluginProperty(group = "connection")
     Property<String> getProjectId();
 
-    @Schema(title = "The GCP service account")
+    @Schema(
+        title = "The GCP service account",
+        description = "When unset or rendered to an empty value, Application Default Credentials are used (e.g. GOOGLE_APPLICATION_CREDENTIALS or the runtime's attached identity)."
+    )
     @PluginProperty(secret = true, group = "connection")
     Property<String> getServiceAccount();
 
