@@ -312,12 +312,8 @@ class CredentialServiceTest {
     }
 
     /**
-     * Builds a syntactically valid service-account JSON key with a freshly generated RSA private key.
-     * Parsing it never touches the network: the key is only used for signing, not exchanged here.
-     */
-    /**
-     * Writes a fake key where the Gradle test task points {@code GOOGLE_APPLICATION_CREDENTIALS}; skips
-     * the test when run outside Gradle, since a JVM cannot set its own environment.
+     * Writes a fake key where the Gradle test task points to {@code GOOGLE_APPLICATION_CREDENTIALS}.
+     * Skips the test when run outside Gradle, since a JVM cannot set its own environment.
      */
     private static void writeAdcKey() throws Exception {
         String adcPath = System.getenv("GOOGLE_APPLICATION_CREDENTIALS");
@@ -331,6 +327,10 @@ class CredentialServiceTest {
         return serviceAccountJson("my-project", "test@my-project.iam.gserviceaccount.com");
     }
 
+    /**
+     * Builds a syntactically valid service-account JSON key with a freshly generated RSA private key.
+     * Parsing it never touches the network: the key is only used for signing, not exchanged here.
+     */
     private static String serviceAccountJson(String projectId, String clientEmail) throws Exception {
         String encodedKey = Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.US_ASCII))
             .encodeToString(generateRsaKeyPair().getPrivate().getEncoded());
