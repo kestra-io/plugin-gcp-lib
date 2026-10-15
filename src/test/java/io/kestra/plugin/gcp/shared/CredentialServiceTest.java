@@ -1,6 +1,9 @@
 package io.kestra.plugin.gcp.shared;
 
+import java.io.File;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
@@ -8,6 +11,7 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.auth.oauth2.ImpersonatedCredentials;
@@ -28,11 +32,16 @@ import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.nullValue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 @KestraTest
 class CredentialServiceTest {
 
     private static final String CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
+    private static final String BLANK_EXPRESSION = "{{ inputs.x | default(null) }}";
+    private static final String ADC_PROJECT_ID = "adc-project";
+    private static final String ADC_CLIENT_EMAIL = "adc@adc-project.iam.gserviceaccount.com";
 
     @Inject
     private RunContextFactory runContextFactory;
@@ -89,7 +98,7 @@ class CredentialServiceTest {
     void shouldReturnExplicitProjectIdWhenSet() {
         GcpInterface gcpInterface = new TestGcpInterface(Property.ofValue("explicit-project"), null, null, null);
 
-        Property<String> resolved = CredentialService.resolveProjectId(gcpInterface, null);
+        Property<String> resolved = CredentialService.resolveProjectId(gcpInterface, false, null);
 
         assertThat(resolved, is(gcpInterface.getProjectId()));
     }
@@ -99,7 +108,7 @@ class CredentialServiceTest {
         GcpInterface gcpInterface = new TestGcpInterface(null, Property.ofValue("sa-key"), null, null);
         ServiceAccountCredentials credentials = serviceAccountCredentials("my-project");
 
-        Property<String> resolved = CredentialService.resolveProjectId(gcpInterface, credentials);
+        Property<String> resolved = CredentialService.resolveProjectId(gcpInterface, true, credentials);
 
         assertThat(resolved, is(Property.ofValue("my-project")));
     }
@@ -111,7 +120,7 @@ class CredentialServiceTest {
         GcpInterface gcpInterface = new TestGcpInterface(null, null, null, null, true);
         ServiceAccountCredentials adcCredentials = serviceAccountCredentials("host-key-project");
 
-        Property<String> resolved = CredentialService.resolveProjectId(gcpInterface, adcCredentials);
+        Property<String> resolved = CredentialService.resolveProjectId(gcpInterface, false, adcCredentials);
 
         assertThat(resolved, is(Property.ofValue("host-key-project")));
     }
@@ -123,7 +132,7 @@ class CredentialServiceTest {
         GcpInterface gcpInterface = new TestGcpInterface(null, null, null, null, false);
         ServiceAccountCredentials adcCredentials = serviceAccountCredentials("host-key-project");
 
-        Property<String> resolved = CredentialService.resolveProjectId(gcpInterface, adcCredentials);
+        Property<String> resolved = CredentialService.resolveProjectId(gcpInterface, false, adcCredentials);
 
         assertThat(resolved, is(nullValue()));
     }
@@ -133,7 +142,7 @@ class CredentialServiceTest {
         GcpInterface gcpInterface = new TestGcpInterface(null, null, null, null);
         GoogleCredentials credentials = GoogleCredentials.newBuilder().build();
 
-        Property<String> resolved = CredentialService.resolveProjectId(gcpInterface, credentials);
+        Property<String> resolved = CredentialService.resolveProjectId(gcpInterface, false, credentials);
 
         assertThat(resolved, is(nullValue()));
     }
@@ -171,6 +180,91 @@ class CredentialServiceTest {
 
         assertThat(connection.credentials(), instanceOf(ImpersonatedCredentials.class));
         assertThat(((ImpersonatedCredentials) connection.credentials()).getAccount(), is("target@my-project.iam.gserviceaccount.com"));
+    }
+
+    @Test
+    void shouldTreatBlankRenderedValueAsUnset() throws Exception {
+        // `{{ ... | default(null) }}` renders to "" rather than null (kestra-io/plugin-gcp#494).
+        RunContext runContext = runContextFactory.of(Map.of("inputs", Map.of("blank", "  ")));
+
+        assertThat(CredentialService.renderNonBlank(runContext, null), is(Optional.empty()));
+        assertThat(CredentialService.renderNonBlank(runContext, Property.ofExpression("{{ null }}")), is(Optional.empty()));
+        assertThat(CredentialService.renderNonBlank(runContext, Property.ofExpression("{{ inputs.missing | default(null) }}")), is(Optional.empty()));
+        assertThat(CredentialService.renderNonBlank(runContext, Property.ofExpression("{{ inputs.blank }}")), is(Optional.empty()));
+        assertThat(CredentialService.renderNonBlank(runContext, Property.ofValue("key")), is(Optional.of("key")));
+    }
+
+    @Test
+    void shouldRejectBlankImpersonatedServiceAccount() throws Exception {
+        // Unlike serviceAccount, a blank impersonation target must fail: dropping it would silently run
+        // as the (usually broader) source identity.
+        RunContext runContext = runContextFactory.of(Map.of("inputs", Map.of("blank", "  ")));
+        GoogleCredentials sourceCredentials = serviceAccountCredentials("my-project");
+
+        for (String expression : List.of("{{ inputs.missing | default(null) }}", "{{ inputs.blank }}")) {
+            GcpInterface gcpInterface = new TestGcpInterface(null, null, Property.ofExpression(expression), null);
+
+            IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> CredentialService.impersonate(runContext, gcpInterface, sourceCredentials, List.of())
+            );
+            assertThat(exception.getMessage(), is("impersonatedServiceAccount rendered to an empty value"));
+        }
+    }
+
+    @Test
+    void shouldImpersonateOnTopOfAdcWhenServiceAccountRendersBlank() throws Exception {
+        writeAdcKey();
+        RunContext runContext = runContextFactory.of(Map.of("inputs", Map.of()));
+        GcpInterface gcpInterface = new TestGcpInterface(
+            null,
+            Property.ofExpression(BLANK_EXPRESSION),
+            Property.ofValue("target@my-project.iam.gserviceaccount.com"),
+            Property.ofValue(List.of(CLOUD_PLATFORM_SCOPE))
+        );
+
+        CredentialService.GcpConnection connection = CredentialService.connection(runContext, gcpInterface);
+
+        // the source must be the ADC key, not a fromStream parse of the blank serviceAccount
+        assertThat(connection.credentials(), instanceOf(ImpersonatedCredentials.class));
+        GoogleCredentials source = ((ImpersonatedCredentials) connection.credentials()).getSourceCredentials();
+        assertThat(source, instanceOf(ServiceAccountCredentials.class));
+        assertThat(((ServiceAccountCredentials) source).getClientEmail(), is(ADC_CLIENT_EMAIL));
+    }
+
+    @Test
+    void shouldNotInferProjectIdFromAdcWhenServiceAccountRendersBlankAndGated() throws Exception {
+        writeAdcKey();
+        RunContext runContext = runContextFactory.of(Map.of("inputs", Map.of()));
+        GcpInterface gcpInterface = new TestGcpInterface(
+            null,
+            Property.ofExpression(BLANK_EXPRESSION),
+            null,
+            Property.ofValue(List.of(CLOUD_PLATFORM_SCOPE)),
+            false
+        );
+
+        CredentialService.GcpConnection connection = CredentialService.connection(runContext, gcpInterface);
+
+        // a configured-but-blank serviceAccount counts as ADC, so the gate applies
+        assertThat(connection.projectId(), is(nullValue()));
+    }
+
+    @Test
+    void shouldInferProjectIdFromAdcWhenServiceAccountRendersBlankAndAllowed() throws Exception {
+        writeAdcKey();
+        RunContext runContext = runContextFactory.of(Map.of("inputs", Map.of()));
+        GcpInterface gcpInterface = new TestGcpInterface(
+            null,
+            Property.ofExpression(BLANK_EXPRESSION),
+            null,
+            Property.ofValue(List.of(CLOUD_PLATFORM_SCOPE)),
+            true
+        );
+
+        CredentialService.GcpConnection connection = CredentialService.connection(runContext, gcpInterface);
+
+        assertThat(connection.projectId(), is(Property.ofValue(ADC_PROJECT_ID)));
     }
 
     @Test
@@ -218,20 +312,36 @@ class CredentialServiceTest {
     }
 
     /**
+     * Writes a fake key where the Gradle test task points to {@code GOOGLE_APPLICATION_CREDENTIALS}.
+     * Skips the test when run outside Gradle, since a JVM cannot set its own environment.
+     */
+    private static void writeAdcKey() throws Exception {
+        String adcPath = System.getenv("GOOGLE_APPLICATION_CREDENTIALS");
+        assumeTrue(adcPath != null && adcPath.endsWith("test-adc" + File.separator + "key.json"), "requires the Gradle test task's fake ADC");
+        Path keyFile = Path.of(adcPath);
+        Files.createDirectories(keyFile.getParent());
+        Files.writeString(keyFile, serviceAccountJson(ADC_PROJECT_ID, ADC_CLIENT_EMAIL));
+    }
+
+    private static String serviceAccountJson() throws Exception {
+        return serviceAccountJson("my-project", "test@my-project.iam.gserviceaccount.com");
+    }
+
+    /**
      * Builds a syntactically valid service-account JSON key with a freshly generated RSA private key.
      * Parsing it never touches the network: the key is only used for signing, not exchanged here.
      */
-    private static String serviceAccountJson() throws Exception {
+    private static String serviceAccountJson(String projectId, String clientEmail) throws Exception {
         String encodedKey = Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.US_ASCII))
             .encodeToString(generateRsaKeyPair().getPrivate().getEncoded());
         String pem = "-----BEGIN PRIVATE KEY-----\n" + encodedKey + "\n-----END PRIVATE KEY-----\n";
 
         Map<String, Object> key = new LinkedHashMap<>();
         key.put("type", "service_account");
-        key.put("project_id", "my-project");
+        key.put("project_id", projectId);
         key.put("private_key_id", "private-key-id");
         key.put("private_key", pem);
-        key.put("client_email", "test@my-project.iam.gserviceaccount.com");
+        key.put("client_email", clientEmail);
         key.put("client_id", "client-id");
         key.put("token_uri", "https://oauth2.googleapis.com/token");
 

@@ -6,6 +6,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.auth.oauth2.GoogleCredentials;
@@ -43,24 +44,39 @@ public final class CredentialService {
     public static GcpConnection connection(RunContext runContext, GcpInterface gcpInterface)
         throws IllegalVariableEvaluationException, IOException {
         List<String> scopes = runContext.render(gcpInterface.getScopes()).asList(String.class);
-        GoogleCredentials sourceCredentials = sourceCredentials(runContext, gcpInterface, scopes);
-        Property<String> projectId = resolveProjectId(gcpInterface, sourceCredentials);
+        Optional<String> serviceAccount = renderNonBlank(runContext, gcpInterface.getServiceAccount());
+        if (gcpInterface.getServiceAccount() != null && serviceAccount.isEmpty()) {
+            runContext.logger().warn("serviceAccount rendered to an empty value, using Application Default Credentials");
+        }
+        GoogleCredentials sourceCredentials = sourceCredentials(runContext, serviceAccount, scopes);
+        Property<String> projectId = resolveProjectId(gcpInterface, serviceAccount.isPresent(), sourceCredentials);
         GoogleCredentials credentials = impersonate(runContext, gcpInterface, sourceCredentials, scopes);
         return new GcpConnection(credentials, projectId);
     }
 
     /**
-     * Builds the credentials authenticating as the configured service account (or application default
-     * credentials), with {@code scopes} applied, before any impersonation is layered on top.
+     * Treats a blank render as unset, since expressions like {@code "{{ outputs.x.key | default(null) }}"} renders
+     * to {@code ""} rather than {@code null} when {@code key} is missing.
      */
-    static GoogleCredentials sourceCredentials(RunContext runContext, GcpInterface gcpInterface, List<String> scopes)
-        throws IllegalVariableEvaluationException, IOException {
+    static Optional<String> renderNonBlank(RunContext runContext, Property<String> property)
+        throws IllegalVariableEvaluationException {
+        if (property == null) {
+            return Optional.empty();
+        }
+        return runContext.render(property).as(String.class).filter(value -> !value.isBlank());
+    }
+
+    /**
+     * Builds the credentials authenticating as the rendered service account key (or application default
+     * credentials when it is absent), with {@code scopes} applied, before any impersonation is layered
+     * on top.
+     */
+    static GoogleCredentials sourceCredentials(RunContext runContext, Optional<String> serviceAccount, List<String> scopes)
+        throws IOException {
         GoogleCredentials credentials;
 
-        if (gcpInterface.getServiceAccount() != null) {
-            String serviceAccount = runContext.render(gcpInterface.getServiceAccount()).as(String.class)
-                .orElseThrow(() -> new IllegalArgumentException("serviceAccount rendered to an empty value"));
-            var byteArrayInputStream = new ByteArrayInputStream(serviceAccount.getBytes(StandardCharsets.UTF_8));
+        if (serviceAccount.isPresent()) {
+            var byteArrayInputStream = new ByteArrayInputStream(serviceAccount.get().getBytes(StandardCharsets.UTF_8));
             credentials = ServiceAccountCredentials.fromStream(byteArrayInputStream);
             var logger = runContext.logger();
 
@@ -98,7 +114,7 @@ public final class CredentialService {
 
         return ImpersonatedCredentials.create(
             sourceCredentials,
-            runContext.render(gcpInterface.getImpersonatedServiceAccount()).as(String.class)
+            renderNonBlank(runContext, gcpInterface.getImpersonatedServiceAccount())
                 .orElseThrow(() -> new IllegalArgumentException("impersonatedServiceAccount rendered to an empty value")),
             null,
             scopes.isEmpty() ? new ArrayList<>() : scopes,
@@ -115,13 +131,13 @@ public final class CredentialService {
      * Inference from credentials that come from Application Default Credentials (no explicit
      * {@code serviceAccount}) is gated on {@link GcpInterface#inferProjectIdFromApplicationDefault()}:
      * plugin-gcp allows it (its historical behaviour), plugin-ee-gcp does not. An explicit
-     * {@code serviceAccount} always allows it.
+     * {@code serviceAccount} always allows it. {@code fromExplicitServiceAccount} must reflect the
+     * rendered value, so a {@code serviceAccount} expression rendering to blank counts as ADC.
      */
-    static Property<String> resolveProjectId(GcpInterface gcpInterface, GoogleCredentials credentials) {
+    static Property<String> resolveProjectId(GcpInterface gcpInterface, boolean fromExplicitServiceAccount, GoogleCredentials credentials) {
         if (gcpInterface.getProjectId() != null) {
             return gcpInterface.getProjectId();
         }
-        boolean fromExplicitServiceAccount = gcpInterface.getServiceAccount() != null;
         if ((fromExplicitServiceAccount || gcpInterface.inferProjectIdFromApplicationDefault())
             && credentials instanceof ServiceAccountCredentials serviceAccountCredentials
             && serviceAccountCredentials.getProjectId() != null) {
