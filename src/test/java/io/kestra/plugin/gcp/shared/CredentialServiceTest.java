@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import com.google.auth.oauth2.GoogleCredentials;
+import com.google.auth.oauth2.IdentityPoolCredentials;
 import com.google.auth.oauth2.ImpersonatedCredentials;
 import com.google.auth.oauth2.ServiceAccountCredentials;
 
@@ -41,6 +42,7 @@ class CredentialServiceTest {
     private static final String CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
     private static final String BLANK_EXPRESSION = "{{ inputs.x | default(null) }}";
     private static final String ADC_PROJECT_ID = "adc-project";
+    private static final String WIF_AUDIENCE = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/k";
     private static final String ADC_CLIENT_EMAIL = "adc@adc-project.iam.gserviceaccount.com";
 
     @Inject
@@ -52,6 +54,45 @@ class CredentialServiceTest {
      * models the plugin-gcp (true) vs plugin-ee-gcp (false) override of
      * {@link GcpInterface#inferProjectIdFromApplicationDefault()}.
      */
+    private record WorkloadIdentityGcpInterface(
+        Property<String> projectId,
+        Property<String> serviceAccount,
+        Property<String> impersonatedServiceAccount,
+        Property<List<String>> scopes,
+        Property<String> workloadIdentityToken,
+        Property<String> workloadIdentityAudience
+    ) implements GcpInterface {
+        @Override
+        public Property<String> getProjectId() {
+            return projectId;
+        }
+
+        @Override
+        public Property<String> getServiceAccount() {
+            return serviceAccount;
+        }
+
+        @Override
+        public Property<String> getImpersonatedServiceAccount() {
+            return impersonatedServiceAccount;
+        }
+
+        @Override
+        public Property<List<String>> getScopes() {
+            return scopes;
+        }
+
+        @Override
+        public Property<String> getWorkloadIdentityToken() {
+            return workloadIdentityToken;
+        }
+
+        @Override
+        public Property<String> getWorkloadIdentityAudience() {
+            return workloadIdentityAudience;
+        }
+    }
+
     private record TestGcpInterface(
         Property<String> projectId,
         Property<String> serviceAccount,
@@ -180,6 +221,61 @@ class CredentialServiceTest {
 
         assertThat(connection.credentials(), instanceOf(ImpersonatedCredentials.class));
         assertThat(((ImpersonatedCredentials) connection.credentials()).getAccount(), is("target@my-project.iam.gserviceaccount.com"));
+    }
+
+    @Test
+    void shouldBuildWorkloadIdentityCredentialsFromToken() throws Exception {
+        RunContext runContext = runContextFactory.of();
+        GcpInterface gcpInterface = new WorkloadIdentityGcpInterface(
+            Property.ofValue("my-project"),
+            null,
+            null,
+            Property.ofValue(List.of(CLOUD_PLATFORM_SCOPE)),
+            Property.ofValue("eyJhbGciOiJSUzI1NiJ9.e30.sig"),
+            Property.ofValue(WIF_AUDIENCE)
+        );
+
+        CredentialService.GcpConnection connection = CredentialService.connection(runContext, gcpInterface);
+
+        assertThat(connection.credentials(), instanceOf(IdentityPoolCredentials.class));
+        IdentityPoolCredentials credentials = (IdentityPoolCredentials) connection.credentials();
+        assertThat(credentials.getAudience(), is(WIF_AUDIENCE));
+        assertThat(credentials.getSubjectTokenType(), is(CredentialService.WORKLOAD_IDENTITY_SUBJECT_TOKEN_TYPE));
+        assertThat(credentials.getTokenUrl(), is(CredentialService.WORKLOAD_IDENTITY_TOKEN_URL));
+        assertThat(credentials.retrieveSubjectToken(), is("eyJhbGciOiJSUzI1NiJ9.e30.sig"));
+        assertThat(credentials.getScopes(), hasItem(CLOUD_PLATFORM_SCOPE));
+        assertThat(connection.projectId(), is(Property.ofValue("my-project")));
+    }
+
+    @Test
+    void shouldLayerImpersonationOnWorkloadIdentityCredentials() throws Exception {
+        RunContext runContext = runContextFactory.of();
+        GcpInterface gcpInterface = new WorkloadIdentityGcpInterface(
+            null,
+            null,
+            Property.ofValue("target@my-project.iam.gserviceaccount.com"),
+            Property.ofValue(List.of(CLOUD_PLATFORM_SCOPE)),
+            Property.ofValue("eyJhbGciOiJSUzI1NiJ9.e30.sig"),
+            Property.ofValue(WIF_AUDIENCE)
+        );
+
+        CredentialService.GcpConnection connection = CredentialService.connection(runContext, gcpInterface);
+
+        assertThat(connection.credentials(), instanceOf(ImpersonatedCredentials.class));
+        assertThat(((ImpersonatedCredentials) connection.credentials()).getSourceCredentials(), instanceOf(IdentityPoolCredentials.class));
+        assertThat(connection.projectId(), nullValue());
+    }
+
+    @Test
+    void shouldRejectWorkloadIdentityTokenWithoutAudienceOrWithServiceAccount() throws Exception {
+        RunContext runContext = runContextFactory.of();
+        GcpInterface noAudience = new WorkloadIdentityGcpInterface(null, null, null, Property.ofValue(List.of()), Property.ofValue("token"), null);
+        GcpInterface withKey = new WorkloadIdentityGcpInterface(null, Property.ofValue(serviceAccountJson()), null, Property.ofValue(List.of()), Property.ofValue("token"), Property.ofValue(WIF_AUDIENCE));
+
+        IllegalArgumentException missing = assertThrows(IllegalArgumentException.class, () -> CredentialService.connection(runContext, noAudience));
+        assertThat(missing.getMessage().contains("workloadIdentityAudience"), is(true));
+        IllegalArgumentException both = assertThrows(IllegalArgumentException.class, () -> CredentialService.connection(runContext, withKey));
+        assertThat(both.getMessage().contains("not both"), is(true));
     }
 
     @Test
