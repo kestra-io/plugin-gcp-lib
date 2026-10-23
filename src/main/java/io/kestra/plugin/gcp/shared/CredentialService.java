@@ -10,6 +10,7 @@ import java.util.Optional;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.auth.oauth2.GoogleCredentials;
+import com.google.auth.oauth2.IdentityPoolCredentials;
 import com.google.auth.oauth2.ImpersonatedCredentials;
 import com.google.auth.oauth2.ServiceAccountCredentials;
 
@@ -19,6 +20,9 @@ import io.kestra.core.runners.RunContext;
 import io.kestra.core.serializers.JacksonMapper;
 
 public final class CredentialService {
+    static final String WORKLOAD_IDENTITY_TOKEN_URL = "https://sts.googleapis.com/v1/token";
+    static final String WORKLOAD_IDENTITY_SUBJECT_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:jwt";
+
     private CredentialService() {
     }
 
@@ -48,7 +52,9 @@ public final class CredentialService {
         if (gcpInterface.getServiceAccount() != null && serviceAccount.isEmpty()) {
             runContext.logger().warn("serviceAccount rendered to an empty value, using Application Default Credentials");
         }
-        GoogleCredentials sourceCredentials = sourceCredentials(runContext, serviceAccount, scopes);
+        GoogleCredentials sourceCredentials = renderNonBlank(runContext, gcpInterface.getWorkloadIdentityToken()).isPresent()
+            ? workloadIdentityCredentials(runContext, gcpInterface, serviceAccount, scopes)
+            : sourceCredentials(runContext, serviceAccount, scopes);
         Property<String> projectId = resolveProjectId(gcpInterface, serviceAccount.isPresent(), sourceCredentials);
         GoogleCredentials credentials = impersonate(runContext, gcpInterface, sourceCredentials, scopes);
         return new GcpConnection(credentials, projectId);
@@ -100,6 +106,42 @@ public final class CredentialService {
         }
 
         return credentials;
+    }
+
+    /**
+     * Builds federated credentials from an OIDC token: Google STS exchanges it for an access token at first
+     * use, so no key material is involved. The token property is rendered again, bypassing the property
+     * cache, every time the SDK refreshes: a token minted by {@code oidcToken()} lives minutes while a task
+     * may run for hours, so replaying the first one would fail the first refresh.
+     */
+    static GoogleCredentials workloadIdentityCredentials(RunContext runContext, GcpInterface gcpInterface, Optional<String> serviceAccount, List<String> scopes)
+        throws IllegalVariableEvaluationException {
+        if (serviceAccount.isPresent()) {
+            throw new IllegalArgumentException("Set either serviceAccount or workloadIdentityToken, not both: they are two different ways to obtain the source identity.");
+        }
+        String audience = renderNonBlank(runContext, gcpInterface.getWorkloadIdentityAudience())
+            .orElseThrow(() -> new IllegalArgumentException("workloadIdentityToken needs workloadIdentityAudience: the resource name of the workload identity pool provider the token was minted for."));
+
+        IdentityPoolCredentials.Builder builder = IdentityPoolCredentials.newBuilder()
+            .setAudience(audience)
+            .setSubjectTokenType(WORKLOAD_IDENTITY_SUBJECT_TOKEN_TYPE)
+            .setTokenUrl(WORKLOAD_IDENTITY_TOKEN_URL)
+            .setSubjectTokenSupplier(context -> freshWorkloadIdentityToken(runContext, gcpInterface));
+        if (!scopes.isEmpty()) {
+            builder.setScopes(scopes);
+        }
+        runContext.logger().trace(" • Using workload identity federation with audience: {}", audience);
+        return builder.build();
+    }
+
+    static String freshWorkloadIdentityToken(RunContext runContext, GcpInterface gcpInterface) throws IOException {
+        try {
+            return runContext.render(gcpInterface.getWorkloadIdentityToken()).skipCache().as(String.class)
+                .filter(value -> !value.isBlank())
+                .orElseThrow(() -> new IOException("workloadIdentityToken rendered to an empty value while refreshing the federated credentials."));
+        } catch (IllegalVariableEvaluationException e) {
+            throw new IOException("Cannot render workloadIdentityToken while refreshing the federated credentials: " + e.getMessage(), e);
+        }
     }
 
     /**

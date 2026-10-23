@@ -29,10 +29,12 @@ Single-module library. Source packages under `io.kestra.plugin.gcp`:
 ### Key Classes
 
 - `io.kestra.plugin.gcp.shared.GcpInterface` — contract for GCP connection properties
-  (`projectId`, `serviceAccount`, `impersonatedServiceAccount`, `scopes`).
+  (`projectId`, `serviceAccount`, `impersonatedServiceAccount`, `scopes`, and
+  `workloadIdentityToken` + `workloadIdentityAudience` for Workload Identity Federation with an
+  OIDC token, e.g. one minted by Kestra Enterprise's `oidcToken()`).
 - `io.kestra.plugin.gcp.shared.CredentialService` — resolves `GoogleCredentials` from a
-  `GcpInterface` (service account key, application default, scopes, impersonation) and infers the
-  effective project id via `resolveProjectId`.
+  `GcpInterface` (service account key, application default, workload identity federation, scopes,
+  impersonation) and infers the effective project id via `resolveProjectId`.
 - `io.kestra.plugin.gcp.shared.AbstractTask` — base `Task` implementing `GcpInterface`, exposing
   `credentials(RunContext)` to concrete GCP tasks.
 

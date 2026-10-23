@@ -23,6 +23,26 @@ public interface GcpInterface {
     @PluginProperty(secret = true, group = "connection")
     Property<String> getImpersonatedServiceAccount();
 
+    @Schema(
+        title = "OIDC token for Workload Identity Federation",
+        description = "When set together with `workloadIdentityAudience`, the token is exchanged at Google STS for federated credentials and no service account key is needed: Google verifies it against the identity provider that issued it. " +
+            "Use `{{ oidcToken(audience='…') }}` to have Kestra Enterprise mint one for the running execution. " +
+            "Combine with `impersonatedServiceAccount` to act as a service account the pool may impersonate, and set `projectId` explicitly since no key file carries it. Cannot be combined with `serviceAccount`."
+    )
+    @PluginProperty(secret = true, group = "connection")
+    default Property<String> getWorkloadIdentityToken() {
+        return null;
+    }
+
+    @Schema(
+        title = "Audience of the Workload Identity Federation provider",
+        description = "The full resource name of the workload identity pool provider, `//iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>`. Required with `workloadIdentityToken`, and must match the `aud` claim of the token."
+    )
+    @PluginProperty(group = "connection")
+    default Property<String> getWorkloadIdentityAudience() {
+        return null;
+    }
+
     @Schema(title = "The GCP scopes to be used")
     @PluginProperty(group = "connection")
     Property<List<String>> getScopes();
