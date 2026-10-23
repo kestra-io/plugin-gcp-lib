@@ -248,6 +248,24 @@ class CredentialServiceTest {
     }
 
     @Test
+    void shouldRenderTheWorkloadIdentityTokenAgainOnEveryRefresh() throws Exception {
+        // oidcToken() mints a short-lived token: replaying the first render on the SDK's hourly refresh would fail.
+        RunContext runContext = runContextFactory.of();
+        GcpInterface gcpInterface = new WorkloadIdentityGcpInterface(
+            null, null, null, Property.ofValue(List.of()),
+            Property.ofExpression("{{ now() }}"),
+            Property.ofValue(WIF_AUDIENCE)
+        );
+
+        IdentityPoolCredentials credentials = (IdentityPoolCredentials) CredentialService.connection(runContext, gcpInterface).credentials();
+        String first = credentials.retrieveSubjectToken();
+        Thread.sleep(5);
+        String second = credentials.retrieveSubjectToken();
+
+        assertThat(first.equals(second), is(false));
+    }
+
+    @Test
     void shouldLayerImpersonationOnWorkloadIdentityCredentials() throws Exception {
         RunContext runContext = runContextFactory.of();
         GcpInterface gcpInterface = new WorkloadIdentityGcpInterface(
