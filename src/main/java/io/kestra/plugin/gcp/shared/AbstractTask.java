@@ -28,6 +28,11 @@ public abstract class AbstractTask extends Task implements GcpInterface {
     @ToString.Exclude
     protected Property<String> impersonatedServiceAccount;
 
+    @ToString.Exclude
+    protected Property<String> workloadIdentityToken;
+
+    protected Property<String> workloadIdentityAudience;
+
     @Builder.Default
     protected Property<List<String>> scopes = Property.ofValue(Collections.singletonList("https://www.googleapis.com/auth/cloud-platform"));
 
