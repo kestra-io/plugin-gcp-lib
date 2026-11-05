@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.auth.oauth2.GoogleCredentials;
@@ -49,12 +50,16 @@ public final class CredentialService {
         throws IllegalVariableEvaluationException, IOException {
         List<String> scopes = runContext.render(gcpInterface.getScopes()).asList(String.class);
         Optional<String> serviceAccount = renderNonBlank(runContext, gcpInterface.getServiceAccount());
-        if (gcpInterface.getServiceAccount() != null && serviceAccount.isEmpty()) {
-            runContext.logger().warn("serviceAccount rendered to an empty value, using Application Default Credentials");
+        var rWorkloadIdentityAudience = renderNonBlank(runContext, gcpInterface.getWorkloadIdentityAudience());
+        GoogleCredentials sourceCredentials;
+        if (gcpInterface.getWorkloadIdentityToken() != null || rWorkloadIdentityAudience.isPresent()) {
+            sourceCredentials = workloadIdentityCredentials(runContext, gcpInterface, serviceAccount, rWorkloadIdentityAudience, scopes);
+        } else {
+            if (gcpInterface.getServiceAccount() != null && serviceAccount.isEmpty()) {
+                runContext.logger().warn("serviceAccount rendered to an empty value, using Application Default Credentials");
+            }
+            sourceCredentials = sourceCredentials(runContext, serviceAccount, scopes);
         }
-        GoogleCredentials sourceCredentials = renderNonBlank(runContext, gcpInterface.getWorkloadIdentityToken()).isPresent()
-            ? workloadIdentityCredentials(runContext, gcpInterface, serviceAccount, scopes)
-            : sourceCredentials(runContext, serviceAccount, scopes);
         Property<String> projectId = resolveProjectId(gcpInterface, serviceAccount.isPresent(), sourceCredentials);
         GoogleCredentials credentials = impersonate(runContext, gcpInterface, sourceCredentials, scopes);
         return new GcpConnection(credentials, projectId);
@@ -109,28 +114,41 @@ public final class CredentialService {
     }
 
     /**
-     * Builds federated credentials from an OIDC token: Google STS exchanges it for an access token at first
-     * use, so no key material is involved. The token property is rendered again, bypassing the property
-     * cache, every time the SDK refreshes: a token minted by {@code oidcToken()} lives minutes while a task
-     * may run for hours, so replaying the first one would fail the first refresh.
+     * Builds federated credentials from an OIDC token, which Google STS exchanges for an access token.
+     * The first exchange uses the token rendered here; later refreshes render it again, since an
+     * {@code oidcToken()} token lives minutes while a task may run for hours.
      */
-    static GoogleCredentials workloadIdentityCredentials(RunContext runContext, GcpInterface gcpInterface, Optional<String> serviceAccount, List<String> scopes)
-        throws IllegalVariableEvaluationException {
+    static GoogleCredentials workloadIdentityCredentials(
+        RunContext runContext,
+        GcpInterface gcpInterface,
+        Optional<String> serviceAccount,
+        Optional<String> rWorkloadIdentityAudience,
+        List<String> scopes
+    ) throws IllegalVariableEvaluationException {
         if (serviceAccount.isPresent()) {
             throw new IllegalArgumentException("Set either serviceAccount or workloadIdentityToken, not both: they are two different ways to obtain the source identity.");
         }
-        String audience = renderNonBlank(runContext, gcpInterface.getWorkloadIdentityAudience())
+        // Fail rather than fall back to the worker's Application Default Credentials.
+        var rToken = renderNonBlank(runContext, gcpInterface.getWorkloadIdentityToken())
+            .orElseThrow(() -> new IllegalArgumentException(
+                "workloadIdentityToken is not set or rendered to an empty value: check that the workloadIdentityToken expression, e.g. `oidcToken(...)`, returns a token on this instance."
+            ));
+        var rAudience = rWorkloadIdentityAudience
             .orElseThrow(() -> new IllegalArgumentException("workloadIdentityToken needs workloadIdentityAudience: the resource name of the workload identity pool provider the token was minted for."));
 
-        IdentityPoolCredentials.Builder builder = IdentityPoolCredentials.newBuilder()
-            .setAudience(audience)
+        var firstToken = new AtomicReference<>(rToken);
+        var builder = IdentityPoolCredentials.newBuilder()
+            .setAudience(rAudience)
             .setSubjectTokenType(WORKLOAD_IDENTITY_SUBJECT_TOKEN_TYPE)
             .setTokenUrl(WORKLOAD_IDENTITY_TOKEN_URL)
-            .setSubjectTokenSupplier(context -> freshWorkloadIdentityToken(runContext, gcpInterface));
+            .setSubjectTokenSupplier(context -> {
+                var rFirstToken = firstToken.getAndSet(null);
+                return rFirstToken != null ? rFirstToken : freshWorkloadIdentityToken(runContext, gcpInterface);
+            });
         if (!scopes.isEmpty()) {
             builder.setScopes(scopes);
         }
-        runContext.logger().trace(" • Using workload identity federation with audience: {}", audience);
+        runContext.logger().trace(" • Using workload identity federation with audience: {}", rAudience);
         return builder.build();
     }
 
@@ -138,7 +156,9 @@ public final class CredentialService {
         try {
             return runContext.render(gcpInterface.getWorkloadIdentityToken()).skipCache().as(String.class)
                 .filter(value -> !value.isBlank())
-                .orElseThrow(() -> new IOException("workloadIdentityToken rendered to an empty value while refreshing the federated credentials."));
+                .orElseThrow(() -> new IOException(
+                    "workloadIdentityToken rendered to an empty value while refreshing the federated credentials: check that the workloadIdentityToken expression, e.g. `oidcToken(...)`, returns a token on this instance."
+                ));
         } catch (IllegalVariableEvaluationException e) {
             throw new IOException("Cannot render workloadIdentityToken while refreshing the federated credentials: " + e.getMessage(), e);
         }

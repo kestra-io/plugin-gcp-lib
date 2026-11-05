@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.auth.oauth2.IdentityPoolCredentials;
 import com.google.auth.oauth2.ImpersonatedCredentials;
@@ -29,9 +30,11 @@ import jakarta.inject.Inject;
 import org.junit.jupiter.api.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -54,14 +57,45 @@ class CredentialServiceTest {
      * models the plugin-gcp (true) vs plugin-ee-gcp (false) override of
      * {@link GcpInterface#inferProjectIdFromApplicationDefault()}.
      */
-    private record WorkloadIdentityGcpInterface(
+    private record TestGcpInterface(
         Property<String> projectId,
         Property<String> serviceAccount,
         Property<String> impersonatedServiceAccount,
         Property<List<String>> scopes,
         Property<String> workloadIdentityToken,
-        Property<String> workloadIdentityAudience
+        Property<String> workloadIdentityAudience,
+        boolean inferFromAdc
     ) implements GcpInterface {
+        private TestGcpInterface(
+            Property<String> projectId,
+            Property<String> serviceAccount,
+            Property<String> impersonatedServiceAccount,
+            Property<List<String>> scopes
+        ) {
+            this(projectId, serviceAccount, impersonatedServiceAccount, scopes, true);
+        }
+
+        private TestGcpInterface(
+            Property<String> projectId,
+            Property<String> serviceAccount,
+            Property<String> impersonatedServiceAccount,
+            Property<List<String>> scopes,
+            boolean inferFromAdc
+        ) {
+            this(projectId, serviceAccount, impersonatedServiceAccount, scopes, null, null, inferFromAdc);
+        }
+
+        private TestGcpInterface(
+            Property<String> projectId,
+            Property<String> serviceAccount,
+            Property<String> impersonatedServiceAccount,
+            Property<List<String>> scopes,
+            Property<String> workloadIdentityToken,
+            Property<String> workloadIdentityAudience
+        ) {
+            this(projectId, serviceAccount, impersonatedServiceAccount, scopes, workloadIdentityToken, workloadIdentityAudience, true);
+        }
+
         @Override
         public Property<String> getProjectId() {
             return projectId;
@@ -90,43 +124,6 @@ class CredentialServiceTest {
         @Override
         public Property<String> getWorkloadIdentityAudience() {
             return workloadIdentityAudience;
-        }
-    }
-
-    private record TestGcpInterface(
-        Property<String> projectId,
-        Property<String> serviceAccount,
-        Property<String> impersonatedServiceAccount,
-        Property<List<String>> scopes,
-        boolean inferFromAdc
-    ) implements GcpInterface {
-        private TestGcpInterface(
-            Property<String> projectId,
-            Property<String> serviceAccount,
-            Property<String> impersonatedServiceAccount,
-            Property<List<String>> scopes
-        ) {
-            this(projectId, serviceAccount, impersonatedServiceAccount, scopes, true);
-        }
-
-        @Override
-        public Property<String> getProjectId() {
-            return projectId;
-        }
-
-        @Override
-        public Property<String> getServiceAccount() {
-            return serviceAccount;
-        }
-
-        @Override
-        public Property<String> getImpersonatedServiceAccount() {
-            return impersonatedServiceAccount;
-        }
-
-        @Override
-        public Property<List<String>> getScopes() {
-            return scopes;
         }
 
         @Override
@@ -225,8 +222,8 @@ class CredentialServiceTest {
 
     @Test
     void shouldBuildWorkloadIdentityCredentialsFromToken() throws Exception {
-        RunContext runContext = runContextFactory.of();
-        GcpInterface gcpInterface = new WorkloadIdentityGcpInterface(
+        var runContext = runContextFactory.of();
+        var gcpInterface = new TestGcpInterface(
             Property.ofValue("my-project"),
             null,
             null,
@@ -235,10 +232,10 @@ class CredentialServiceTest {
             Property.ofValue(WIF_AUDIENCE)
         );
 
-        CredentialService.GcpConnection connection = CredentialService.connection(runContext, gcpInterface);
+        var connection = CredentialService.connection(runContext, gcpInterface);
 
         assertThat(connection.credentials(), instanceOf(IdentityPoolCredentials.class));
-        IdentityPoolCredentials credentials = (IdentityPoolCredentials) connection.credentials();
+        var credentials = (IdentityPoolCredentials) connection.credentials();
         assertThat(credentials.getAudience(), is(WIF_AUDIENCE));
         assertThat(credentials.getSubjectTokenType(), is(CredentialService.WORKLOAD_IDENTITY_SUBJECT_TOKEN_TYPE));
         assertThat(credentials.getTokenUrl(), is(CredentialService.WORKLOAD_IDENTITY_TOKEN_URL));
@@ -250,25 +247,38 @@ class CredentialServiceTest {
     @Test
     void shouldRenderTheWorkloadIdentityTokenAgainOnEveryRefresh() throws Exception {
         // oidcToken() mints a short-lived token: replaying the first render on the SDK's hourly refresh would fail.
-        RunContext runContext = runContextFactory.of();
-        GcpInterface gcpInterface = new WorkloadIdentityGcpInterface(
-            null, null, null, Property.ofValue(List.of()),
-            Property.ofExpression("{{ now() }}"),
-            Property.ofValue(WIF_AUDIENCE)
-        );
+        // Deserialized like a flow, so the property caches its rendered value unless skipCache() is used.
+        var runContext = runContextFactory.of();
+        Property<String> token = JacksonMapper.ofJson().readValue("\"{{ uuid() }}\"", new TypeReference<>() {
+        });
+        var gcpInterface = new TestGcpInterface(null, null, null, Property.ofValue(List.of()), token, Property.ofValue(WIF_AUDIENCE));
 
-        IdentityPoolCredentials credentials = (IdentityPoolCredentials) CredentialService.connection(runContext, gcpInterface).credentials();
-        String first = credentials.retrieveSubjectToken();
-        Thread.sleep(5);
-        String second = credentials.retrieveSubjectToken();
+        var credentials = (IdentityPoolCredentials) CredentialService.connection(runContext, gcpInterface).credentials();
+        var first = credentials.retrieveSubjectToken();
+        var second = credentials.retrieveSubjectToken();
+        var third = credentials.retrieveSubjectToken();
 
-        assertThat(first.equals(second), is(false));
+        assertThat(first, not(second));
+        assertThat(second, not(third));
+    }
+
+    @Test
+    void shouldRejectWorkloadIdentityTokenRenderingBlank() throws Exception {
+        // Falling back to Application Default Credentials would silently run as the worker's identity.
+        var runContext = runContextFactory.of(Map.of("inputs", Map.of()));
+        var blankToken = new TestGcpInterface(null, null, null, Property.ofValue(List.of()), Property.ofExpression(BLANK_EXPRESSION), Property.ofValue(WIF_AUDIENCE));
+        var audienceOnly = new TestGcpInterface(null, null, null, Property.ofValue(List.of()), null, Property.ofValue(WIF_AUDIENCE));
+
+        var blank = assertThrows(IllegalArgumentException.class, () -> CredentialService.connection(runContext, blankToken));
+        assertThat(blank.getMessage(), containsString("workloadIdentityToken"));
+        var missing = assertThrows(IllegalArgumentException.class, () -> CredentialService.connection(runContext, audienceOnly));
+        assertThat(missing.getMessage(), containsString("workloadIdentityToken"));
     }
 
     @Test
     void shouldLayerImpersonationOnWorkloadIdentityCredentials() throws Exception {
-        RunContext runContext = runContextFactory.of();
-        GcpInterface gcpInterface = new WorkloadIdentityGcpInterface(
+        var runContext = runContextFactory.of();
+        var gcpInterface = new TestGcpInterface(
             null,
             null,
             Property.ofValue("target@my-project.iam.gserviceaccount.com"),
@@ -277,7 +287,7 @@ class CredentialServiceTest {
             Property.ofValue(WIF_AUDIENCE)
         );
 
-        CredentialService.GcpConnection connection = CredentialService.connection(runContext, gcpInterface);
+        var connection = CredentialService.connection(runContext, gcpInterface);
 
         assertThat(connection.credentials(), instanceOf(ImpersonatedCredentials.class));
         assertThat(((ImpersonatedCredentials) connection.credentials()).getSourceCredentials(), instanceOf(IdentityPoolCredentials.class));
@@ -286,13 +296,13 @@ class CredentialServiceTest {
 
     @Test
     void shouldRejectWorkloadIdentityTokenWithoutAudienceOrWithServiceAccount() throws Exception {
-        RunContext runContext = runContextFactory.of();
-        GcpInterface noAudience = new WorkloadIdentityGcpInterface(null, null, null, Property.ofValue(List.of()), Property.ofValue("token"), null);
-        GcpInterface withKey = new WorkloadIdentityGcpInterface(null, Property.ofValue(serviceAccountJson()), null, Property.ofValue(List.of()), Property.ofValue("token"), Property.ofValue(WIF_AUDIENCE));
+        var runContext = runContextFactory.of();
+        var noAudience = new TestGcpInterface(null, null, null, Property.ofValue(List.of()), Property.ofValue("token"), null);
+        var withKey = new TestGcpInterface(null, Property.ofValue(serviceAccountJson()), null, Property.ofValue(List.of()), Property.ofValue("token"), Property.ofValue(WIF_AUDIENCE));
 
-        IllegalArgumentException missing = assertThrows(IllegalArgumentException.class, () -> CredentialService.connection(runContext, noAudience));
+        var missing = assertThrows(IllegalArgumentException.class, () -> CredentialService.connection(runContext, noAudience));
         assertThat(missing.getMessage().contains("workloadIdentityAudience"), is(true));
-        IllegalArgumentException both = assertThrows(IllegalArgumentException.class, () -> CredentialService.connection(runContext, withKey));
+        var both = assertThrows(IllegalArgumentException.class, () -> CredentialService.connection(runContext, withKey));
         assertThat(both.getMessage().contains("not both"), is(true));
     }
 
